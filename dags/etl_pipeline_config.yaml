@@ -1,0 +1,11 @@
+dag_id: "my_etl_pipeline"
+start_date: "2025-01-01"
+schedule_interval: "@daily"
+
+tasks:
+  - id: "extract"
+    bash_command: "echo '[Extract] Simulating data extraction...'"
+  - id: "transform"
+    bash_command: "echo '[Transform] Simulating data transformation...'"
+  - id: "load"
+    bash_command: "echo '[Load] Simulating data loading...'"
