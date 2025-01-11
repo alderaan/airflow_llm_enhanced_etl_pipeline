@@ -5,6 +5,7 @@ PROJECT_DIR := $(shell pwd)
 AIRFLOW_HOME := $(PROJECT_DIR)/.airflow_home
 DAGS_DIR := $(PROJECT_DIR)/dags
 PYTHON := python3  # or "python" depending on your system
+KERNEL_NAME := airflow_demo  # name for ipykernel
 
 .PHONY: install init run clean
 
@@ -42,3 +43,10 @@ clean:
 	# Stop Airflow if running and remove airflow_home + venv
 	# (You might want to refine this for a real project.)
 	rm -rf $(AIRFLOW_HOME) venv
+
+kernel:
+	# Register an IPython kernel so you can select your venv in Jupyter
+	. venv/bin/activate; \
+	    python -m ipykernel install --user --name $(KERNEL_NAME) \
+	    --display-name "Python ($(KERNEL_NAME))"
+		jupyter nbextension enable --py widgetsnbextension || true
