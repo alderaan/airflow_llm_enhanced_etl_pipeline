@@ -3,3 +3,4 @@ apache-airflow[celery]==2.10.4
 ipykernel>=6.29.0
 matplotlib==3.9.4
 ydata-profiling[notebook]==4.12.1
+openai==1.59.6
