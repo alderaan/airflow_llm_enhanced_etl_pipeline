@@ -22,6 +22,7 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
         query = "SELECT 1"  # Placeholder
         super().__init__(
             task_id=task_id,
+            project_id=project_id,
             gcp_conn_id="google_cloud_default",
             configuration={
                 "query": {
@@ -34,23 +35,33 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
 
     def _fetch_reviews(self) -> pd.DataFrame:
         """Fetch reviews that need translation."""
-        self.log.info("Starting to fetch reviews...")  # This will show in logs
+        self.log.info("Starting to fetch reviews...")
 
-        bq = BigQueryHook(
-            gcp_conn_id=self.gcp_conn_id,
-            project_id=self.project_id,
-        )
+        bq = BigQueryHook(gcp_conn_id=self.gcp_conn_id)
 
         query = f"""
             SELECT review_id, review_comment_message
             FROM `{self.project_id}.{self.dataset_id}.{self.table_id}`
             WHERE review_comment_message IS NOT NULL
               AND review_comment_message_en IS NULL
-            LIMIT 100
+            LIMIT 1000
         """
 
-        df = bq.get_pandas_df(query)
-        self.log.info(f"Fetched {len(df)} reviews")  # This will show in logs
+        self.log.info("project is: " + str(self.project_id))
+        df = bq.get_pandas_df(
+            sql=query,
+            dialect="standard",
+            configuration={
+                "query": {
+                    "useLegacySql": False,
+                    "defaultDataset": {
+                        "projectId": self.project_id,
+                        "datasetId": self.dataset_id,
+                    },
+                }
+            },
+        )
+        self.log.info(f"Fetched {len(df)} reviews")
         return df
 
     def _prepare_batch_requests(self, reviews: pd.DataFrame) -> List[Dict]:
