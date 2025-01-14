@@ -11,6 +11,7 @@ from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
     GCSToBigQueryOperator,
 )
 from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+from operators.review_enrichment import ReviewEnrichmentOperator
 
 # --------------------------------------------------------------------------------
 # 1) LOAD YAML CONFIG
@@ -145,22 +146,11 @@ tasks["load_order_reviews_to_bq"] >> clean_order_reviews
 # For demo: we simulate waiting 24h and then updating the columns.
 # In practice, you might run an external script to get real translations/sentiment.
 
-enrich_order_reviews = BigQueryInsertJobOperator(
+enrich_order_reviews = ReviewEnrichmentOperator(
     task_id="enrich_order_reviews",
-    gcp_conn_id="google_cloud_default",
-    configuration={
-        "query": {
-            "query": """
-                -- Dummy example: update with some mock translations/sentiment
-                UPDATE `correlion.olist_clean.order_reviews`
-                SET 
-                  review_comment_message_en = CONCAT('[EN] ', review_comment_message),
-                  review_sentiment_score = 5  -- pretend everything is 5/5
-                WHERE 1=1;
-            """,
-            "useLegacySql": False,
-        }
-    },
+    project_id="correlion",
+    dataset_id="olist_clean",
+    table_id="order_reviews",
     dag=dag,
 )
 
