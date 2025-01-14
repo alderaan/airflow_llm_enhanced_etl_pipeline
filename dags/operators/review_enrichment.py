@@ -135,35 +135,55 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
 
         return translations
 
-    def _update_translations(self, translations: Dict[str, str]):
+    def _update_translations(self, translations: Dict[str, str], context):
         """Update BigQuery table with translations."""
-        cases = "\n".join(
-            [
-                f"WHEN review_id = '{review_id}' THEN '{translation.replace(chr(39), chr(39) + chr(39))}'"
-                for review_id, translation in translations.items()
-            ]
-        )
+        # Create parameters for each translation
+        parameters = []
+        update_statements = []
+
+        for i, (review_id, translation) in enumerate(translations.items()):
+            param_name = f"translation_{i}"
+            parameters.append(
+                {
+                    "name": param_name,
+                    "parameterType": {"type": "STRING"},
+                    "parameterValue": {"value": translation},
+                }
+            )
+            update_statements.append(
+                f"WHEN review_id = '{review_id}' THEN @{param_name}"
+            )
+
+        cases = "\n                ".join(update_statements)
+        review_ids = "', '".join(translations.keys())
 
         query = f"""
             UPDATE `{self.project_id}.{self.dataset_id}.{self.table_id}`
-            SET 
-                review_comment_message_en = CASE
-                    {cases}
-                    ELSE review_comment_message_en
+            SET review_comment_message_en = (
+                CASE
+                {cases}
+                ELSE review_comment_message_en
                 END
-            WHERE review_id IN ({','.join([f"'{rid}'" for rid in translations.keys()])});
+            )
+            WHERE review_id IN ('{review_ids}');
         """
 
-        # Use BigQueryInsertJobOperator directly
+        self.log.info("Executing update query with %d translations", len(translations))
+
         update_job = BigQueryInsertJobOperator(
             task_id=f"{self.task_id}_update",
             project_id=self.project_id,
             configuration={
-                "query": {"query": query, "useLegacySql": False, "location": "US"}
+                "query": {
+                    "query": query,
+                    "useLegacySql": False,
+                    "location": "US",
+                    "queryParameters": parameters,
+                }
             },
             gcp_conn_id=self.gcp_conn_id,
         )
-        update_job.execute(context=None)
+        update_job.execute(context=context)
 
     def execute(self, context):
         # 1. Fetch reviews needing translation
@@ -185,21 +205,16 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
         # 4. Poll until complete
         while True:
             status = self.client.batches.retrieve(batch.id)
-            self.log.info(f"Current batch status: {status}")  # Log full status object
+            self.log.info(f"Current batch status: {status}")
 
             if status.status == "completed":
-                # Process results and update BigQuery
                 translations = self._process_batch_results(status.output_file_id)
-                self._update_translations(translations)
+                self._update_translations(translations, context)
                 break
             elif status.status in ["failed", "expired", "cancelled"]:
-                # Log more details about the failure
                 self.log.error(f"Batch failed. Full status object: {status}")
-                self.log.error(
-                    f"Status details: {status.error}"
-                )  # Log error details if available
-                raise Exception(
-                    f"Batch failed with status: {status.status}. "
-                    f"Error details: {getattr(status, 'error', 'No error details available')}"
-                )
+                if hasattr(status, "errors"):
+                    self.log.error(f"Error details: {status.errors.data}")
+                raise Exception(f"Batch failed with status: {status.status}")
+
             time.sleep(30)
