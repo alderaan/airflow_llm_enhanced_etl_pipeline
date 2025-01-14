@@ -3,10 +3,6 @@ start_date: "2025-01-01"
 schedule_interval: "@daily"
 
 tasks:
-  - id: "extract"
-    bash_command: "echo '[Extract] Simulating data extraction...'"
-  - id: "transform"
-    bash_command: "echo '[Transform] Simulating data transformation...'"
   - id: "load_customers"
     gcs_bucket: "correlion_olist"
     gcs_object_name: "olist_customers_dataset.csv"

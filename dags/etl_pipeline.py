@@ -29,31 +29,13 @@ dag = DAG(
     catchup=False,
 )
 
-# --------------------------------------------------------------------------------
-# 2) EXTRACT & TRANSFORM TASKS (DUMMY)
-# --------------------------------------------------------------------------------
 tasks = {}
 
-extract_cfg = config["tasks"][0]  # 'extract'
-transform_cfg = config["tasks"][1]  # 'transform'
-
-tasks["extract"] = BashOperator(
-    task_id=extract_cfg["id"],
-    bash_command=extract_cfg["bash_command"],
-    dag=dag,
-)
-
-tasks["transform"] = BashOperator(
-    task_id=transform_cfg["id"],
-    bash_command=transform_cfg["bash_command"],
-    dag=dag,
-)
-
 # --------------------------------------------------------------------------------
-# 3) LOAD TO STAGING (CSV -> GCS -> BigQuery)
+# 2) LOAD TO STAGING (CSV -> GCS -> BigQuery)
 # --------------------------------------------------------------------------------
 # The rest of the tasks in config are "load_*" tasks
-for task_cfg in config["tasks"][2:]:
+for task_cfg in config["tasks"]:
     table_name = task_cfg["bq_table"]
 
     # 3a) Upload CSV to GCS
@@ -86,8 +68,8 @@ for task_cfg in config["tasks"][2:]:
     tasks[upload_task_id] = upload_to_gcs
     tasks[load_task_id] = load_to_bq
 
-    # Define the load dependencies: extract -> transform -> upload_to_gcs -> load_to_bq
-    tasks["extract"] >> tasks["transform"] >> upload_to_gcs >> load_to_bq
+    # Modify the dependencies to only link upload_to_gcs -> load_to_bq
+    upload_to_gcs >> load_to_bq
 
 # --------------------------------------------------------------------------------
 # 4) CLEAN TASKS (DUMMY SELECT *), EXCEPT ORDER_REVIEWS HAS NEW COLUMNS
