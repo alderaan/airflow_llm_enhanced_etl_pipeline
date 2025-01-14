@@ -1,6 +1,9 @@
 --constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.10.4/constraints-3.8.txt
+google-auth==2.37.0
 apache-airflow[celery]==2.10.4
+apache-airflow-providers-google==12.0.0
 ipykernel>=6.29.0
 matplotlib==3.9.4
 ydata-profiling[notebook]==4.12.1
 openai==1.59.6
+
