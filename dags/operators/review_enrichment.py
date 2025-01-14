@@ -44,7 +44,7 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
             FROM `{self.project_id}.{self.dataset_id}.{self.table_id}`
             WHERE review_comment_message IS NOT NULL
               AND review_comment_message_en IS NULL
-            LIMIT 1000
+            LIMIT 100
         """
 
         self.log.info("project is: " + str(self.project_id))
@@ -67,9 +67,20 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
     def _prepare_batch_requests(self, reviews: pd.DataFrame) -> List[Dict]:
         """Convert reviews to JSONL format for batch processing."""
         requests = []
+        seen_ids = set()  # Track seen IDs
+
         for idx, row in reviews.iterrows():
+            review_id = row["review_id"]
+
+            # Skip if we've seen this ID before
+            if review_id in seen_ids:
+                self.log.warning(f"Skipping duplicate review_id: {review_id}")
+                continue
+
+            seen_ids.add(review_id)
+
             request = {
-                "custom_id": row["review_id"],
+                "custom_id": review_id,
                 "method": "POST",
                 "url": "/v1/chat/completions",
                 "body": {
@@ -92,6 +103,8 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
                 },
             }
             requests.append(request)
+
+        self.log.info(f"Prepared {len(requests)} unique requests")
         return requests
 
     def _create_batch_file(self, requests: List[Dict]) -> str:
@@ -124,8 +137,6 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
 
     def _update_translations(self, translations: Dict[str, str]):
         """Update BigQuery table with translations."""
-        # Convert translations to SQL CASE statement
-        # Remember to escape single quotes in the translation text
         cases = "\n".join(
             [
                 f"WHEN review_id = '{review_id}' THEN '{translation.replace(chr(39), chr(39) + chr(39))}'"
@@ -143,10 +154,16 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
             WHERE review_id IN ({','.join([f"'{rid}'" for rid in translations.keys()])});
         """
 
-        bq = BigQueryHook(
-            gcp_conn_id=self.gcp_conn_id, project_id=self.project_id  # Pass it here too
+        # Use BigQueryInsertJobOperator directly
+        update_job = BigQueryInsertJobOperator(
+            task_id=f"{self.task_id}_update",
+            project_id=self.project_id,
+            configuration={
+                "query": {"query": query, "useLegacySql": False, "location": "US"}
+            },
+            gcp_conn_id=self.gcp_conn_id,
         )
-        bq.run_query(query)
+        update_job.execute(context=None)
 
     def execute(self, context):
         # 1. Fetch reviews needing translation
@@ -168,11 +185,21 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
         # 4. Poll until complete
         while True:
             status = self.client.batches.retrieve(batch.id)
+            self.log.info(f"Current batch status: {status}")  # Log full status object
+
             if status.status == "completed":
                 # Process results and update BigQuery
                 translations = self._process_batch_results(status.output_file_id)
                 self._update_translations(translations)
                 break
             elif status.status in ["failed", "expired", "cancelled"]:
-                raise Exception(f"Batch failed with status: {status.status}")
+                # Log more details about the failure
+                self.log.error(f"Batch failed. Full status object: {status}")
+                self.log.error(
+                    f"Status details: {status.error}"
+                )  # Log error details if available
+                raise Exception(
+                    f"Batch failed with status: {status.status}. "
+                    f"Error details: {getattr(status, 'error', 'No error details available')}"
+                )
             time.sleep(30)
