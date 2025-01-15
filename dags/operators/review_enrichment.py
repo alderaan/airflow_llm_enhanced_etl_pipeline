@@ -108,14 +108,21 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
 
     def _create_batch_file(self, requests: List[Dict]) -> str:
         """Create JSONL file and upload to OpenAI."""
+        # Save timestamp for unique filename
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        local_file = f"/tmp/reviews_batch_{timestamp}.jsonl"
+
         # Write requests to temp JSONL file
-        with open("/tmp/reviews_batch.jsonl", "w") as f:
+        with open(local_file, "w") as f:
             for req in requests:
                 f.write(json.dumps(req) + "\n")
 
+        self.log.info(f"Saved batch input file locally to: {local_file}")
+
         # Upload file to OpenAI
-        with open("/tmp/reviews_batch.jsonl", "rb") as f:
+        with open(local_file, "rb") as f:
             file = self.client.files.create(file=f, purpose="batch")
+
         return file.id
 
     def _process_batch_results(self, output_file_id: str) -> Dict[str, str]:
