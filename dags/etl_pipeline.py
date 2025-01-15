@@ -2,7 +2,6 @@ import os
 import yaml
 from datetime import datetime
 from airflow import DAG
-from airflow.operators.bash import BashOperator
 
 from airflow.providers.google.cloud.transfers.local_to_gcs import (
     LocalFilesystemToGCSOperator,
@@ -133,9 +132,9 @@ clean_order_reviews = BigQueryInsertJobOperator(
                     review_comment_message,
                     review_creation_date,
                     review_answer_timestamp,
-                    -- Explicitly cast to STRING and INT64:
+                    -- Explicitly cast to STRING and JSON:
                     CAST(NULL AS STRING) AS review_comment_message_en,
-                    CAST(NULL AS INT64) AS review_sentiment_score
+                    CAST(NULL AS JSON) AS review_aspect_scores
                 FROM deduplicated
                 WHERE review_id_rank = 1 AND order_id_rank = 1;
             """,
@@ -154,15 +153,16 @@ tasks["load_order_reviews_to_bq"] >> clean_order_reviews
 # For demo: we simulate waiting 24h and then updating the columns.
 # In practice, you might run an external script to get real translations/sentiment.
 
-enrich_order_reviews = ReviewEnrichmentOperator(
-    task_id="enrich_order_reviews",
-    project_id="correlion",
-    dataset_id="olist_clean",
-    table_id="order_reviews",
-    dag=dag,
-)
-
-tasks["enrich_order_reviews"] = enrich_order_reviews
-
-# Make sure the enrichment happens AFTER the clean task
-clean_order_reviews >> enrich_order_reviews
+# Temporarily disabled - uncomment to re-enable
+# enrich_order_reviews = ReviewEnrichmentOperator(
+#     task_id="enrich_order_reviews",
+#     project_id="correlion",
+#     dataset_id="olist_clean",
+#     table_id="order_reviews",
+#     dag=dag,
+# )
+#
+# tasks["enrich_order_reviews"] = enrich_order_reviews
+#
+# # Make sure the enrichment happens AFTER the clean task
+# clean_order_reviews >> enrich_order_reviews
