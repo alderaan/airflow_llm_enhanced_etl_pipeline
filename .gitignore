@@ -175,3 +175,4 @@ cython_debug/
 *.zip
 *.csv
 .DS_Store
+tmp/

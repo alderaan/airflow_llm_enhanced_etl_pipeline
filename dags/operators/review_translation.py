@@ -8,7 +8,7 @@ from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
 from airflow.utils.log.logging_mixin import LoggingMixin
 
 
-class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
+class ReviewTranslationOperator(BigQueryInsertJobOperator, LoggingMixin):
     def __init__(
         self, task_id: str, project_id: str, dataset_id: str, table_id: str, **kwargs
     ):
@@ -111,7 +111,7 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
         """Create JSONL file and upload to OpenAI."""
         # Save timestamp for unique filename
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        local_file = f"tmp/reviews_batch_{timestamp}.jsonl"
+        local_file = f"tmp/translations_input_{timestamp}.jsonl"
 
         # Write requests to temp JSONL file
         with open(local_file, "w") as f:
@@ -129,8 +129,15 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
     def _process_batch_results(self, output_file_id: str) -> Dict[str, str]:
         """Process batch results and extract translations."""
         content = self.client.files.content(output_file_id)
-        translations = {}
 
+        # Save output file locally
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        local_file = f"tmp/translations_output_{timestamp}.jsonl"
+        with open(local_file, "w") as f:
+            f.write(content.text)
+        self.log.info(f"Saved batch output file locally to: {local_file}")
+
+        translations = {}
         for line in content.text.strip().split("\n"):
             result = json.loads(line)
             review_id = result["custom_id"]

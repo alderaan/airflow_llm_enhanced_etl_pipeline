@@ -10,7 +10,8 @@ from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
     GCSToBigQueryOperator,
 )
 from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
-from operators.review_enrichment import ReviewEnrichmentOperator
+from operators.review_translation import ReviewTranslationOperator
+from operators.review_aspect_scoring import ReviewAspectScoringOperator
 
 # --------------------------------------------------------------------------------
 # 1) LOAD YAML CONFIG
@@ -148,21 +149,29 @@ tasks["clean_order_reviews"] = clean_order_reviews
 tasks["load_order_reviews_to_bq"] >> clean_order_reviews
 
 # --------------------------------------------------------------------------------
-# 5) ENRICH REVIEWS (SIMULATED BATCH LLM PROCESS AFTER CLEAN)
+# 5) ENRICH REVIEWS WITH TRANSLATIONS AND ASPECT SCORES
 # --------------------------------------------------------------------------------
-# For demo: we simulate waiting 24h and then updating the columns.
-# In practice, you might run an external script to get real translations/sentiment.
-
-# Temporarily disabled - uncomment to re-enable
-# enrich_order_reviews = ReviewEnrichmentOperator(
-#     task_id="enrich_order_reviews",
-#     project_id="correlion",
-#     dataset_id="olist_clean",
-#     table_id="order_reviews",
-#     dag=dag,
+# First translate reviews
+# translate_reviews = ReviewTranslationOperator(
+#    task_id="translate_reviews",
+#    project_id="correlion",
+#    dataset_id="olist_clean",
+#    table_id="order_reviews",
+#    dag=dag,
 # )
-#
-# tasks["enrich_order_reviews"] = enrich_order_reviews
-#
-# # Make sure the enrichment happens AFTER the clean task
-# clean_order_reviews >> enrich_order_reviews
+
+# Then score aspects
+score_review_aspects = ReviewAspectScoringOperator(
+    task_id="score_review_aspects",
+    project_id="correlion",
+    dataset_id="olist_clean",
+    table_id="order_reviews",
+    dag=dag,
+)
+
+# tasks["translate_reviews"] = translate_reviews
+tasks["score_review_aspects"] = score_review_aspects
+
+# Set up the sequence: clean -> translate -> score
+# clean_order_reviews >> translate_reviews >> score_review_aspects
+clean_order_reviews >> score_review_aspects
