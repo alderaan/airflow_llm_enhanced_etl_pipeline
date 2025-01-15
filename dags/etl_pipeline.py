@@ -110,7 +110,7 @@ for tbl in pass_through_tables:
     # e.g. tasks["load_customers_to_bq"] >> tasks["clean_customers"]
     tasks[f"load_{tbl}_to_bq"] >> tasks[task_id]
 
-# Now define a special "clean" for order_reviews that adds two columns
+# Now define a special "clean" for order_reviews that adds two columns and removes duplicates
 clean_order_reviews = BigQueryInsertJobOperator(
     task_id="clean_order_reviews",
     gcp_conn_id="google_cloud_default",
@@ -118,6 +118,13 @@ clean_order_reviews = BigQueryInsertJobOperator(
         "query": {
             "query": """
                 CREATE OR REPLACE TABLE `correlion.olist_clean.order_reviews` AS
+                WITH deduplicated AS (
+                    SELECT 
+                        *,
+                        ROW_NUMBER() OVER (PARTITION BY review_id ORDER BY review_creation_date) as review_id_rank,
+                        ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY review_creation_date) as order_id_rank
+                    FROM `correlion.olist_staging.order_reviews`
+                )
                 SELECT
                     review_id,
                     order_id,
@@ -129,7 +136,8 @@ clean_order_reviews = BigQueryInsertJobOperator(
                     -- Explicitly cast to STRING and INT64:
                     CAST(NULL AS STRING) AS review_comment_message_en,
                     CAST(NULL AS INT64) AS review_sentiment_score
-                FROM `correlion.olist_staging.order_reviews`;
+                FROM deduplicated
+                WHERE review_id_rank = 1 AND order_id_rank = 1;
             """,
             "useLegacySql": False,
         }

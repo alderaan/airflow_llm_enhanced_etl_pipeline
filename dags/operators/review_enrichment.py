@@ -44,7 +44,6 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
             FROM `{self.project_id}.{self.dataset_id}.{self.table_id}`
             WHERE review_comment_message IS NOT NULL
               AND review_comment_message_en IS NULL
-            LIMIT 100
         """
 
         self.log.info("project is: " + str(self.project_id))
@@ -206,6 +205,7 @@ class ReviewEnrichmentOperator(BigQueryInsertJobOperator, LoggingMixin):
         while True:
             status = self.client.batches.retrieve(batch.id)
             self.log.info(f"Current batch status: {status}")
+            self.log.info(f"Status: {status.status}")
 
             if status.status == "completed":
                 translations = self._process_batch_results(status.output_file_id)
