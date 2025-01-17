@@ -152,13 +152,13 @@ tasks["load_order_reviews_to_bq"] >> clean_order_reviews
 # 5) ENRICH REVIEWS WITH TRANSLATIONS AND ASPECT SCORES
 # --------------------------------------------------------------------------------
 # First translate reviews
-# translate_reviews = ReviewTranslationOperator(
-#    task_id="translate_reviews",
-#    project_id="correlion",
-#    dataset_id="olist_clean",
-#    table_id="order_reviews",
-#    dag=dag,
-# )
+translate_reviews = ReviewTranslationOperator(
+    task_id="translate_reviews",
+    project_id="correlion",
+    dataset_id="olist_clean",
+    table_id="order_reviews",
+    dag=dag,
+)
 
 # Then score aspects
 score_review_aspects = ReviewAspectScoringOperator(
@@ -169,9 +169,9 @@ score_review_aspects = ReviewAspectScoringOperator(
     dag=dag,
 )
 
-# tasks["translate_reviews"] = translate_reviews
+tasks["translate_reviews"] = translate_reviews
 tasks["score_review_aspects"] = score_review_aspects
 
 # Set up the sequence: clean -> translate -> score
-# clean_order_reviews >> translate_reviews >> score_review_aspects
-clean_order_reviews >> score_review_aspects
+clean_order_reviews >> translate_reviews >> score_review_aspects
+# clean_order_reviews >> score_review_aspects

@@ -41,9 +41,9 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
         client = bq.get_client(project_id=self.project_id)
 
         query = f"""
-            SELECT review_id, review_comment_message
+            SELECT review_id, review_comment_message_en
             FROM `{self.project_id}.{self.dataset_id}.{self.table_id}`
-            WHERE review_comment_message IS NOT NULL
+            WHERE review_comment_message_en IS NOT NULL
               AND review_aspect_scores IS NULL
               LIMIT 100
         """
@@ -83,11 +83,12 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
                                 "a single review from a customer.\n\n"
                                 "Task: For each of the following aspects, output a "
                                 "numeric score between -1.0 and +1.0 (inclusive):\n"
-                                "1. delivery\n"
-                                "2. product_quality\n"
-                                "3. customer_service\n"
-                                "4. refund_process\n"
-                                "5. packaging_condition\n\n"
+                                "1. delivery_speed (Only about shipping speed/time.)\n"
+                                "2. product_quality (Only about the item’s quality or defects.)\n"
+                                "3. customer_service (Only about service reps or support if contact already happened.)\n"
+                                "4. refund_process (Only about ease/difficulty of returning or refunding if that already happened.)\n"
+                                "5. packaging_condition (Only about how the package arrived (damaged or intact).)\n\n"
+                                "6. correct_items (Only about whether the customer received the right or wrong item.)\n\n"
                                 "• -1.0 = extremely negative\n"
                                 "• 0.0 = neutral or not mentioned\n"
                                 "• +1.0 = extremely positive\n\n"
@@ -100,7 +101,7 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
                         },
                         {
                             "role": "user",
-                            "content": f'Customer Review: "{row["review_comment_message"]}"',
+                            "content": f'Customer Review: "{row["review_comment_message_en"]}"',
                         },
                     ],
                     "response_format": {"type": "json_object"},

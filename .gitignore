@@ -176,3 +176,4 @@ cython_debug/
 *.csv
 .DS_Store
 tmp/
+*.jsonl
