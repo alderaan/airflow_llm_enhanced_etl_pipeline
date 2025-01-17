@@ -175,3 +175,51 @@ tasks["score_review_aspects"] = score_review_aspects
 # Set up the sequence: clean -> translate -> score
 clean_order_reviews >> translate_reviews >> score_review_aspects
 # clean_order_reviews >> score_review_aspects
+
+# --------------------------------------------------------------------------------
+# 6) AGGREGATION TASKS
+# --------------------------------------------------------------------------------
+agg_sales_daily = BigQueryInsertJobOperator(
+    task_id="agg_sales_daily",
+    gcp_conn_id="google_cloud_default",
+    configuration={
+        "query": {
+            "query": """
+                CREATE OR REPLACE TABLE `correlion.olist_aggregated.agg_sales_daily` AS
+                WITH daily_agg AS (
+                  SELECT
+                    DATE(o.order_purchase_timestamp) AS order_date,
+                    COUNT(DISTINCT o.order_id) AS total_orders,
+                    SUM(oi.price) AS total_revenue,
+                    AVG(oi.freight_value) AS avg_freight_value,
+                    AVG(rv.review_score) AS avg_review_score,
+                    -- Total items sold: count of order_item_id
+                    COUNT(oi.order_item_id) AS total_items_sold,
+                    -- Average items per order: total_items_sold / total_orders
+                    COUNT(oi.order_item_id) / COUNT(DISTINCT o.order_id) AS avg_items_per_order
+                  FROM `correlion.olist_clean.orders` o
+                  -- Join to order_items
+                  LEFT JOIN `correlion.olist_clean.order_items` oi
+                    ON o.order_id = oi.order_id
+                  -- Join to order_reviews (to get review_score)
+                  LEFT JOIN `correlion.olist_clean.order_reviews` rv
+                    ON o.order_id = rv.order_id
+                  GROUP BY 1
+                )
+                SELECT *
+                FROM daily_agg;
+            """,
+            "useLegacySql": False,
+        }
+    },
+    dag=dag,
+)
+
+tasks["agg_sales_daily"] = agg_sales_daily
+
+# Set up dependencies: this task needs clean_orders, clean_order_items, and clean_order_reviews to be done
+[
+    tasks["clean_orders"],
+    tasks["clean_order_items"],
+    clean_order_reviews,
+] >> agg_sales_daily
