@@ -62,6 +62,31 @@ for task_cfg in config["tasks"]:
         skip_leading_rows=1,
         write_disposition="WRITE_TRUNCATE",
         allow_quoted_newlines=True,
+        # Special handling for product category translation table
+        schema_fields=(
+            [
+                (
+                    {
+                        "name": "product_category_name",
+                        "type": "STRING",
+                        "mode": "NULLABLE",
+                    }
+                    if table_name == "product_category_name_translation"
+                    else None
+                ),
+                (
+                    {
+                        "name": "product_category_name_english",
+                        "type": "STRING",
+                        "mode": "NULLABLE",
+                    }
+                    if table_name == "product_category_name_translation"
+                    else None
+                ),
+            ]
+            if table_name == "product_category_name_translation"
+            else None
+        ),
         gcp_conn_id="google_cloud_default",
         dag=dag,
     )
@@ -284,8 +309,86 @@ agg_sales_by_city = BigQueryInsertJobOperator(
     dag=dag,
 )
 
+agg_aspect_score_by_product = BigQueryInsertJobOperator(
+    task_id="agg_aspect_score_by_product",
+    gcp_conn_id="google_cloud_default",
+    configuration={
+        "query": {
+            "query": """
+                CREATE OR REPLACE TABLE `correlion.olist_aggregated.agg_aspect_score_by_product` AS
+                SELECT
+                  p.product_id,
+                  t.product_category_name_english AS product_category_name_en,
+                  EXTRACT(YEAR FROM r.review_answer_timestamp) AS review_year,
+                  EXTRACT(MONTH FROM r.review_answer_timestamp) AS review_month,
+                  
+                  -- Review counts
+                  COUNT(r.review_id) AS total_reviews,
+                  COUNTIF(r.review_aspect_scores IS NOT NULL) AS num_reviews_with_aspect_scores,
+                  
+                  -- Average aspect scores
+                  AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.delivery') AS FLOAT64)) AS avg_delivery_score,
+                  AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.product_quality') AS FLOAT64)) AS avg_product_quality_score,
+                  AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.customer_service') AS FLOAT64)) AS avg_customer_service_score,
+                  AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.refund_process') AS FLOAT64)) AS avg_refund_process_score,
+                  AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.packaging_condition') AS FLOAT64)) AS avg_packaging_condition_score,
+                  
+                  -- Count of negative aspect scores (< 0)
+                  SUM(
+                    CASE WHEN CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.delivery') AS FLOAT64) < 0 
+                         THEN 1 ELSE 0 
+                    END
+                  ) AS count_negative_delivery,
+                  SUM(
+                    CASE WHEN CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.product_quality') AS FLOAT64) < 0 
+                         THEN 1 ELSE 0 
+                    END
+                  ) AS count_negative_product_quality,
+                  SUM(
+                    CASE WHEN CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.customer_service') AS FLOAT64) < 0 
+                         THEN 1 ELSE 0 
+                    END
+                  ) AS count_negative_customer_service,
+                  SUM(
+                    CASE WHEN CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.refund_process') AS FLOAT64) < 0 
+                         THEN 1 ELSE 0 
+                    END
+                  ) AS count_negative_refund_process,
+                  SUM(
+                    CASE WHEN CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.packaging_condition') AS FLOAT64) < 0 
+                         THEN 1 ELSE 0 
+                    END
+                  ) AS count_negative_packaging_condition
+
+                FROM `correlion.olist_clean.order_reviews` AS r
+                JOIN `correlion.olist_clean.order_items` AS i
+                  ON r.order_id = i.order_id
+                JOIN `correlion.olist_clean.products` AS p
+                  ON i.product_id = p.product_id
+                JOIN `correlion.olist_clean.product_category_name_translation` AS t
+                  ON p.product_category_name = t.product_category_name
+
+                WHERE r.review_aspect_scores IS NOT NULL
+
+                GROUP BY
+                  p.product_id,
+                  t.product_category_name_english,
+                  review_year,
+                  review_month
+                ORDER BY
+                  p.product_id,
+                  review_year,
+                  review_month;
+            """,
+            "useLegacySql": False,
+        }
+    },
+    dag=dag,
+)
+
 tasks["agg_sales_daily"] = agg_sales_daily
 tasks["agg_sales_by_city"] = agg_sales_by_city
+tasks["agg_aspect_score_by_product"] = agg_aspect_score_by_product
 
 # Set up dependencies for daily aggregation
 [
@@ -301,3 +404,11 @@ tasks["agg_sales_by_city"] = agg_sales_by_city
     tasks["clean_order_items"],
     clean_order_reviews,
 ] >> agg_sales_by_city
+
+# Set up dependencies for aspect score aggregation
+[
+    tasks["clean_order_items"],
+    tasks["clean_products"],
+    tasks["clean_product_category_name_translation"],
+    score_review_aspects,  # This ensures we have aspect scores before aggregating
+] >> agg_aspect_score_by_product
