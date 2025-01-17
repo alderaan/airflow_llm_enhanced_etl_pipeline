@@ -215,11 +215,89 @@ agg_sales_daily = BigQueryInsertJobOperator(
     dag=dag,
 )
 
-tasks["agg_sales_daily"] = agg_sales_daily
+agg_sales_by_city = BigQueryInsertJobOperator(
+    task_id="agg_sales_by_city",
+    gcp_conn_id="google_cloud_default",
+    configuration={
+        "query": {
+            "query": """
+                CREATE OR REPLACE TABLE `correlion.olist_aggregated.agg_sales_by_city` AS
+                WITH city_agg AS (
+                  SELECT
+                    -- Month-level (truncate to month)
+                    DATE_TRUNC(DATE(o.order_purchase_timestamp), MONTH) AS order_month,
+                    -- Also store a Year-Month string (e.g. '202501')
+                    FORMAT_DATE('%Y%m', DATE(o.order_purchase_timestamp)) AS year_month,
+                    
+                    c.customer_city AS city,
+                    c.customer_state AS state,
+                    
+                    COUNT(DISTINCT o.order_id) AS total_orders,
+                    SUM(oi.price) AS total_revenue,
+                    
+                    -- Unique customers in that city/month
+                    COUNT(DISTINCT o.customer_id) AS unique_customers,
+                    
+                    -- Total items sold (count of item rows)
+                    COUNT(oi.order_item_id) AS total_items_sold,
+                    -- Average items per order
+                    COUNT(oi.order_item_id) / COUNT(DISTINCT o.order_id) AS avg_items_per_order,
+                    
+                    -- Review score
+                    AVG(rv.review_score) AS avg_review_score,
+                    
+                    -- Freight
+                    SUM(oi.freight_value) AS total_freight_value,
+                    AVG(oi.freight_value) AS avg_freight_value
+                  FROM `correlion.olist_clean.orders` o
+                  JOIN `correlion.olist_clean.customers` c
+                    ON o.customer_id = c.customer_id
+                  LEFT JOIN `correlion.olist_clean.order_items` oi
+                    ON o.order_id = oi.order_id
+                  LEFT JOIN `correlion.olist_clean.order_reviews` rv
+                    ON o.order_id = rv.order_id
+                  GROUP BY
+                    1, 2, 3, 4
+                )
+                SELECT
+                  order_month,
+                  year_month,
+                  city,
+                  state,
+                  total_orders,
+                  total_revenue,
+                  unique_customers,
+                  total_items_sold,
+                  avg_items_per_order,
+                  avg_review_score,
+                  total_freight_value,
+                  avg_freight_value
+                FROM city_agg
+                ORDER BY
+                  order_month,
+                  city,
+                  state;
+            """,
+            "useLegacySql": False,
+        }
+    },
+    dag=dag,
+)
 
-# Set up dependencies: this task needs clean_orders, clean_order_items, and clean_order_reviews to be done
+tasks["agg_sales_daily"] = agg_sales_daily
+tasks["agg_sales_by_city"] = agg_sales_by_city
+
+# Set up dependencies for daily aggregation
 [
     tasks["clean_orders"],
     tasks["clean_order_items"],
     clean_order_reviews,
 ] >> agg_sales_daily
+
+# Set up dependencies for city aggregation (needs customers table too)
+[
+    tasks["clean_orders"],
+    tasks["clean_customers"],
+    tasks["clean_order_items"],
+    clean_order_reviews,
+] >> agg_sales_by_city
