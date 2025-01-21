@@ -316,69 +316,71 @@ agg_aspect_score_by_product = BigQueryInsertJobOperator(
         "query": {
             "query": """
                 CREATE OR REPLACE TABLE `correlion.olist_aggregated.agg_aspect_score_by_product` AS
+                WITH review_scores AS (
+                  SELECT
+                    p.product_id,
+                    t.product_category_name_english AS product_category_name_en,
+                    EXTRACT(YEAR FROM r.review_answer_timestamp) AS review_year,
+                    EXTRACT(MONTH FROM r.review_answer_timestamp) AS review_month,
+                    DATE_TRUNC(DATE(r.review_answer_timestamp), MONTH) AS review_month_date,
+                    
+                    -- Review counts
+                    COUNT(r.review_id) AS total_reviews,
+                    COUNTIF(r.review_aspect_scores IS NOT NULL) AS num_reviews_with_aspect_scores,
+                    
+                    -- Average aspect scores
+                    AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.delivery') AS FLOAT64)) AS avg_delivery_score,
+                    AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.product_quality') AS FLOAT64)) AS avg_product_quality_score,
+                    AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.customer_service') AS FLOAT64)) AS avg_customer_service_score,
+                    AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.refund_process') AS FLOAT64)) AS avg_refund_process_score,
+                    AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.packaging_condition') AS FLOAT64)) AS avg_packaging_condition_score,
+                    
+                    -- Count of negative aspect scores (< 0)
+                    COUNTIF(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.delivery') AS FLOAT64) < 0) AS count_negative_delivery,
+                    COUNTIF(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.product_quality') AS FLOAT64) < 0) AS count_negative_product_quality,
+                    COUNTIF(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.customer_service') AS FLOAT64) < 0) AS count_negative_customer_service,
+                    COUNTIF(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.refund_process') AS FLOAT64) < 0) AS count_negative_refund_process,
+                    COUNTIF(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.packaging_condition') AS FLOAT64) < 0) AS count_negative_packaging_condition
+
+                  FROM `correlion.olist_clean.order_reviews` AS r
+                  JOIN `correlion.olist_clean.order_items` AS i
+                    ON r.order_id = i.order_id
+                  JOIN `correlion.olist_clean.products` AS p
+                    ON i.product_id = p.product_id
+                  JOIN `correlion.olist_clean.product_category_name_translation` AS t
+                    ON p.product_category_name = t.product_category_name
+
+                  WHERE r.review_aspect_scores IS NOT NULL
+
+                  GROUP BY
+                    p.product_id,
+                    t.product_category_name_english,
+                    review_year,
+                    review_month,
+                    review_month_date
+                )
                 SELECT
-                  p.product_id,
-                  t.product_category_name_english AS product_category_name_en,
-                  EXTRACT(YEAR FROM r.review_answer_timestamp) AS review_year,
-                  EXTRACT(MONTH FROM r.review_answer_timestamp) AS review_month,
-                  
-                  -- Review counts
-                  COUNT(r.review_id) AS total_reviews,
-                  COUNTIF(r.review_aspect_scores IS NOT NULL) AS num_reviews_with_aspect_scores,
-                  
-                  -- Average aspect scores
-                  AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.delivery') AS FLOAT64)) AS avg_delivery_score,
-                  AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.product_quality') AS FLOAT64)) AS avg_product_quality_score,
-                  AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.customer_service') AS FLOAT64)) AS avg_customer_service_score,
-                  AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.refund_process') AS FLOAT64)) AS avg_refund_process_score,
-                  AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.packaging_condition') AS FLOAT64)) AS avg_packaging_condition_score,
-                  
-                  -- Count of negative aspect scores (< 0)
-                  SUM(
-                    CASE WHEN CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.delivery') AS FLOAT64) < 0 
-                         THEN 1 ELSE 0 
-                    END
-                  ) AS count_negative_delivery,
-                  SUM(
-                    CASE WHEN CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.product_quality') AS FLOAT64) < 0 
-                         THEN 1 ELSE 0 
-                    END
-                  ) AS count_negative_product_quality,
-                  SUM(
-                    CASE WHEN CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.customer_service') AS FLOAT64) < 0 
-                         THEN 1 ELSE 0 
-                    END
-                  ) AS count_negative_customer_service,
-                  SUM(
-                    CASE WHEN CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.refund_process') AS FLOAT64) < 0 
-                         THEN 1 ELSE 0 
-                    END
-                  ) AS count_negative_refund_process,
-                  SUM(
-                    CASE WHEN CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.packaging_condition') AS FLOAT64) < 0 
-                         THEN 1 ELSE 0 
-                    END
-                  ) AS count_negative_packaging_condition
-
-                FROM `correlion.olist_clean.order_reviews` AS r
-                JOIN `correlion.olist_clean.order_items` AS i
-                  ON r.order_id = i.order_id
-                JOIN `correlion.olist_clean.products` AS p
-                  ON i.product_id = p.product_id
-                JOIN `correlion.olist_clean.product_category_name_translation` AS t
-                  ON p.product_category_name = t.product_category_name
-
-                WHERE r.review_aspect_scores IS NOT NULL
-
-                GROUP BY
-                  p.product_id,
-                  t.product_category_name_english,
+                  product_id,
+                  product_category_name_en,
                   review_year,
-                  review_month
+                  review_month,
+                  review_month_date,
+                  total_reviews,
+                  num_reviews_with_aspect_scores,
+                  avg_delivery_score,
+                  avg_product_quality_score,
+                  avg_customer_service_score,
+                  avg_refund_process_score,
+                  avg_packaging_condition_score,
+                  count_negative_delivery,
+                  count_negative_product_quality,
+                  count_negative_customer_service,
+                  count_negative_refund_process,
+                  count_negative_packaging_condition
+                FROM review_scores
                 ORDER BY
-                  p.product_id,
-                  review_year,
-                  review_month;
+                  review_month_date,
+                  product_id;
             """,
             "useLegacySql": False,
         }
