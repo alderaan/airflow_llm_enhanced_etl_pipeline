@@ -124,6 +124,7 @@ class ReviewTranslationOperator(BigQueryInsertJobOperator, LoggingMixin):
         with open(local_file, "rb") as f:
             file = self.client.files.create(file=f, purpose="batch")
 
+        self.log.info(f"Created batch file with ID: {file.id}")
         return file.id
 
     def _process_batch_results(self, output_file_id: str) -> Dict[str, str]:
