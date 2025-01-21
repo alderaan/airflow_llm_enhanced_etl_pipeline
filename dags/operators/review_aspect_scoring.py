@@ -84,7 +84,7 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
                                 "Task: For each of the following aspects, output a "
                                 "numeric score between -1.0 and +1.0 (inclusive):\n"
                                 "1. delivery_speed (Only about shipping speed/time.)\n"
-                                "2. product_quality (Only about the item’s quality or defects.)\n"
+                                "2. product_quality (Only about the item's quality or defects.)\n"
                                 "3. customer_service (Only about service reps or support if contact already happened.)\n"
                                 "4. refund_process (Only about ease/difficulty of returning or refunding if that already happened.)\n"
                                 "5. packaging_condition (Only about how the package arrived (damaged or intact).)\n\n"
@@ -211,11 +211,13 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
         # 1. Fetch reviews needing aspect scoring
         reviews_df = self._fetch_reviews()
         if reviews_df.empty:
+            self.log.info("No reviews to score", flush=True)
             return "No reviews to score"
 
         # 2. Prepare and submit batch
         requests = self._prepare_batch_requests(reviews_df)
         file_id = self._create_batch_file(requests)
+        self.log.info(f"Created batch file with ID: {file_id}", flush=True)
 
         # 3. Create batch job
         batch = self.client.batches.create(
@@ -223,21 +225,45 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
             endpoint="/v1/chat/completions",
             completion_window="24h",
         )
+        self.log.info(f"Created batch job with ID: {batch.id}", flush=True)
 
         # 4. Poll until complete
+        poll_count = 0
         while True:
+            poll_count += 1
             status = self.client.batches.retrieve(batch.id)
-            self.log.info(f"Current batch status: {status}")
-            self.log.info(f"Status: {status.status}")
+
+            # Log both full status and clean status string
+            self.log.info(f"Poll #{poll_count} - Full status: {status}", flush=True)
+            self.log.info(f"Poll #{poll_count} - Status: {status.status}", flush=True)
+
+            # Log event counts if available
+            if hasattr(status, "events"):
+                self.log.info(
+                    f"Events - "
+                    f"Created: {status.events.created_count}, "
+                    f"Running: {status.events.running_count}, "
+                    f"Succeeded: {status.events.succeeded_count}, "
+                    f"Failed: {status.events.failed_count}",
+                    flush=True,
+                )
 
             if status.status == "completed":
+                self.log.info("Batch completed successfully", flush=True)
                 aspect_scores = self._process_batch_results(status.output_file_id)
+                self.log.info(
+                    f"Processed {len(aspect_scores)} aspect scores", flush=True
+                )
                 self._update_aspect_scores(aspect_scores, context)
+                self.log.info("Updated BigQuery with aspect scores", flush=True)
                 break
             elif status.status in ["failed", "expired", "cancelled"]:
-                self.log.error(f"Batch failed. Full status object: {status}")
+                self.log.error(
+                    f"Batch failed. Full status object: {status}", flush=True
+                )
                 if hasattr(status, "errors"):
-                    self.log.error(f"Error details: {status.errors.data}")
+                    self.log.error(f"Error details: {status.errors.data}", flush=True)
                 raise Exception(f"Batch failed with status: {status.status}")
 
+            self.log.info("Waiting 30 seconds before next poll...", flush=True)
             time.sleep(30)

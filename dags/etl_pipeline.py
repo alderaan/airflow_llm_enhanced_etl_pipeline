@@ -308,6 +308,9 @@ with dag:
                             COUNT(r.review_id) AS total_reviews,
                             COUNTIF(r.review_aspect_scores IS NOT NULL) AS num_reviews_with_aspect_scores,
                             
+                            -- Classic star rating average
+                            AVG(r.review_score) AS avg_review_score,
+                            
                             -- Average aspect scores
                             AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.delivery') AS FLOAT64)) AS avg_delivery_score,
                             AVG(CAST(JSON_EXTRACT_SCALAR(r.review_aspect_scores, '$.product_quality') AS FLOAT64)) AS avg_product_quality_score,
@@ -347,6 +350,7 @@ with dag:
                           review_month_date,
                           total_reviews,
                           num_reviews_with_aspect_scores,
+                          avg_review_score,
                           avg_delivery_score,
                           avg_product_quality_score,
                           avg_customer_service_score,
