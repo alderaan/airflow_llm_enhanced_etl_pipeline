@@ -6,19 +6,32 @@ AIRFLOW_HOME := $(PROJECT_DIR)/.airflow_home
 DAGS_DIR := $(PROJECT_DIR)/dags
 PYTHON := python3  # or "python" depending on your system
 KERNEL_NAME := airflow_demo  # name for ipykernel
+DB_NAME := airflow_demo
 
-.PHONY: install init run clean
+# Add PostgreSQL to PATH (for M1/M2 Macs, adjust path if needed)
+export PATH := /opt/homebrew/opt/postgresql@14/bin:$(PATH)
+
+.PHONY: install init run clean create-db
 
 install:
 	# 1. Create a virtual environment
 	$(PYTHON) -m venv venv
 
-	# 2. Activate it and install dependencies
+	# 2. Activate it and install Airflow with constraints
 	. venv/bin/activate; \
 	    pip install --upgrade pip && \
+	    pip install -r airflow-requirements.txt \
+	        --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.4/constraints-3.8.txt"
+
+	# 3. Install other dependencies without constraints
+	. venv/bin/activate; \
 	    pip install -r requirements.txt
 
-init:
+create-db:
+	@echo "Creating PostgreSQL database $(DB_NAME)..."
+	@createdb $(DB_NAME) 2>/dev/null || echo "Database already exists"
+
+init: create-db
 	# Make sure local AIRFLOW_HOME directories exist
 	mkdir -p $(AIRFLOW_HOME)/logs
 	mkdir -p $(AIRFLOW_HOME)/plugins
@@ -27,27 +40,57 @@ init:
 	. venv/bin/activate; \
 	    AIRFLOW_HOME=$(AIRFLOW_HOME) \
 	    AIRFLOW__CORE__DAGS_FOLDER=$(DAGS_DIR) \
+	    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql://localhost/$(DB_NAME) \
+	    AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql://localhost/$(DB_NAME) \
 	    airflow db init
 
-run:
-	# Start Airflow in standalone mode
-	# It will use .airflow_home as AIRFLOW_HOME and look in airflow_demo/dags/ for DAGs.
+# Common environment variables for both processes
+define AIRFLOW_ENV
+	AIRFLOW_HOME=$(AIRFLOW_HOME) \
+	AIRFLOW__CORE__DAGS_FOLDER=$(DAGS_DIR) \
+	AIRFLOW__CORE__LOAD_EXAMPLES=False \
+	AIRFLOW__WEBSERVER__AUTHENTICATE=False \
+	AIRFLOW__LOGGING__BASE_LOG_FOLDER=$(AIRFLOW_HOME)/logs \
+	AIRFLOW__LOGGING__LOGGING_LEVEL=INFO \
+	AIRFLOW__LOGGING__FAB_LOGGING_LEVEL=WARN \
+	AIRFLOW__LOGGING__COLORED_CONSOLE_LOG=True \
+	AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth \
+	AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql://localhost/$(DB_NAME) \
+	AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql://localhost/$(DB_NAME)
+endef
+
+airflow-webserver:
 	. venv/bin/activate; \
-	    AIRFLOW_HOME=$(AIRFLOW_HOME) \
-	    AIRFLOW__CORE__DAGS_FOLDER=$(DAGS_DIR) \
-		AIRFLOW__CORE__LOAD_EXAMPLES=False \
-		AIRFLOW__WEBSERVER__AUTHENTICATE=False \
-		AIRFLOW__LOGGING__BASE_LOG_FOLDER=$(AIRFLOW_HOME)/logs \
-		AIRFLOW__LOGGING__LOGGING_LEVEL=INFO \
-		AIRFLOW__LOGGING__FAB_LOGGING_LEVEL=WARN \
-		AIRFLOW__LOGGING__COLORED_CONSOLE_LOG=True \
-		AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth \
-	    airflow standalone
+	$(AIRFLOW_ENV) \
+	airflow webserver
+
+airflow-scheduler:
+	. venv/bin/activate; \
+	$(AIRFLOW_ENV) \
+	airflow scheduler
+
+airflow-start:
+	@echo "Starting Airflow webserver and scheduler..."
+	@make airflow-webserver > webserver.log 2>&1 & echo $$! > webserver.pid
+	@make airflow-scheduler > scheduler.log 2>&1 & echo $$! > scheduler.pid
+	@echo "Airflow processes started. Check webserver.log and scheduler.log for output"
+
+airflow-stop:
+	@echo "Stopping Airflow processes..."
+	@if [ -f webserver.pid ]; then kill $$(cat webserver.pid) 2>/dev/null || true; rm webserver.pid; fi
+	@if [ -f scheduler.pid ]; then kill $$(cat scheduler.pid) 2>/dev/null || true; rm scheduler.pid; fi
+	@if [ -f $(AIRFLOW_HOME)/airflow-webserver.pid ]; then rm $(AIRFLOW_HOME)/airflow-webserver.pid; fi
+	@if [ -f $(AIRFLOW_HOME)/airflow-scheduler.pid ]; then rm $(AIRFLOW_HOME)/airflow-scheduler.pid; fi
+	@pkill -f "airflow webserver" || true
+	@pkill -f "airflow scheduler" || true
+	@echo "Airflow processes stopped"
 
 clean:
 	# Stop Airflow if running and remove airflow_home + venv
-	# (You might want to refine this for a real project.)
+	make airflow-stop || true
 	rm -rf $(AIRFLOW_HOME) venv
+	@echo "Dropping PostgreSQL database $(DB_NAME)..."
+	@dropdb $(DB_NAME) 2>/dev/null || true
 
 kernel:
 	# Register an IPython kernel so you can select your venv in Jupyter

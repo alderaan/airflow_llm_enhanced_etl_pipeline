@@ -1,9 +1,10 @@
---constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.10.4/constraints-3.8.txt
-google-auth==2.37.0
-apache-airflow[celery]==2.10.4
-apache-airflow-providers-google==12.0.0
-ipykernel>=6.29.0
-matplotlib==3.9.4
-ydata-profiling[notebook]==4.12.1
-openai==1.59.6
+# Non-Airflow dependencies
+google-auth==2.37.0  # Required for Google Cloud integration
+pandas>=2.1.2       # Version required by airflow-providers-google
+apache-airflow-providers-google>=10.23.0  # Latest version compatible with pandas>=2.1.2
+ipykernel>=6.29.0   # For Jupyter notebook support
+matplotlib==3.9.4   # For data visualization
+ydata-profiling[notebook]==4.12.1  # For data profiling
+openai==1.59.6      # For OpenAI API access
+psycopg2-binary==2.9.9  # For PostgreSQL support
 

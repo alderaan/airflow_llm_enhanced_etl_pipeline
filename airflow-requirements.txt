@@ -1,0 +1,5 @@
+# Core Airflow with selected providers
+apache-airflow[celery,postgres]==2.10.4  # Main Airflow package with Celery and Postgres support
+
+# Note: These packages should be installed with the constraints file:
+# --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.4/constraints-3.8.txt" 
