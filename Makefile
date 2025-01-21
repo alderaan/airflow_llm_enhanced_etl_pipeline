@@ -11,7 +11,15 @@ DB_NAME := airflow_demo
 # Add PostgreSQL to PATH (for M1/M2 Macs, adjust path if needed)
 export PATH := /opt/homebrew/opt/postgresql@14/bin:$(PATH)
 
-.PHONY: install init run clean create-db
+.PHONY: install init run clean create-db full-setup
+
+full-setup:
+	@echo "Running full setup..."
+	@make clean
+	@make install
+	@make create-db
+	@make init
+	@echo "Full setup complete! You can now start Airflow with 'make airflow-start'"
 
 install:
 	# 1. Create a virtual environment
@@ -44,6 +52,19 @@ init: create-db
 	    AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql://localhost/$(DB_NAME) \
 	    airflow db init
 
+	# Create default admin user (admin/admin)
+	. venv/bin/activate; \
+	    AIRFLOW_HOME=$(AIRFLOW_HOME) \
+	    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql://localhost/$(DB_NAME) \
+	    AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql://localhost/$(DB_NAME) \
+	    airflow users create \
+	        --username admin \
+	        --firstname admin \
+	        --lastname admin \
+	        --role Admin \
+	        --email admin@example.com \
+	        --password admin
+
 # Common environment variables for both processes
 define AIRFLOW_ENV
 	AIRFLOW_HOME=$(AIRFLOW_HOME) \
@@ -56,7 +77,16 @@ define AIRFLOW_ENV
 	AIRFLOW__LOGGING__COLORED_CONSOLE_LOG=True \
 	AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth \
 	AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql://localhost/$(DB_NAME) \
-	AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql://localhost/$(DB_NAME)
+	AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql://localhost/$(DB_NAME) \
+	AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC=10 \
+	AIRFLOW__WEBSERVER__UPDATE_FAB_PERMS=False \
+	AIRFLOW__WEBSERVER__WARN_DEPLOYMENT_EXPOSURE=False \
+	AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True \
+	AIRFLOW__WEBSERVER__RELOAD_ON_PLUGIN_CHANGE=True \
+	AIRFLOW__SCHEDULER__JOB_HEARTBEAT_SEC=5 \
+	AIRFLOW__SCHEDULER__SCHEDULER_HEALTH_CHECK_THRESHOLD=30 \
+	AIRFLOW__WEBSERVER__RELOAD_ON_PLUGIN_CHANGE=True \
+	AIRFLOW__WEBSERVER__AUTO_REFRESH_INTERVAL=5
 endef
 
 airflow-webserver:
@@ -70,6 +100,11 @@ airflow-scheduler:
 	airflow scheduler
 
 airflow-start:
+	@echo "Checking if port 8080 is available..."
+	@if lsof -i:8080 >/dev/null; then \
+		echo "Error: Port 8080 is already in use. Run 'make airflow-stop' first"; \
+		exit 1; \
+	fi
 	@echo "Starting Airflow webserver and scheduler..."
 	@make airflow-webserver > webserver.log 2>&1 & echo $$! > webserver.pid
 	@make airflow-scheduler > scheduler.log 2>&1 & echo $$! > scheduler.pid
@@ -83,6 +118,13 @@ airflow-stop:
 	@if [ -f $(AIRFLOW_HOME)/airflow-scheduler.pid ]; then rm $(AIRFLOW_HOME)/airflow-scheduler.pid; fi
 	@pkill -f "airflow webserver" || true
 	@pkill -f "airflow scheduler" || true
+	@pkill -f "gunicorn" || true
+	@echo "Waiting for processes to stop..."
+	@sleep 2
+	@if lsof -i:8080 >/dev/null; then \
+		echo "Force killing any remaining processes on port 8080..."; \
+		lsof -ti:8080 | xargs kill -9 2>/dev/null || true; \
+	fi
 	@echo "Airflow processes stopped"
 
 clean:
