@@ -97,7 +97,7 @@ airflow-webserver:
 airflow-scheduler:
 	. venv/bin/activate; \
 	$(AIRFLOW_ENV) \
-	airflow scheduler
+	airflow scheduler --subdir $(DAGS_DIR) --pid $(AIRFLOW_HOME)/airflow-scheduler.pid
 
 airflow-start:
 	@echo "Checking if port 8080 is available..."
@@ -108,7 +108,21 @@ airflow-start:
 	@echo "Starting Airflow webserver and scheduler..."
 	@make airflow-webserver > webserver.log 2>&1 & echo $$! > webserver.pid
 	@make airflow-scheduler > scheduler.log 2>&1 & echo $$! > scheduler.pid
-	@echo "Airflow processes started. Check webserver.log and scheduler.log for output"
+	@echo "Waiting for processes to start..."
+	@sleep 5
+	@if ! ps -p $$(cat scheduler.pid) > /dev/null; then \
+		echo "Error: Scheduler failed to start. Check scheduler.log for details"; \
+		make airflow-stop; \
+		exit 1; \
+	fi
+	@if ! ps -p $$(cat webserver.pid) > /dev/null; then \
+		echo "Error: Webserver failed to start. Check webserver.log for details"; \
+		make airflow-stop; \
+		exit 1; \
+	fi
+	@echo "Airflow processes started successfully!"
+	@echo "Webserver: http://localhost:8080"
+	@echo "Check webserver.log and scheduler.log for detailed output"
 
 airflow-stop:
 	@echo "Stopping Airflow processes..."
