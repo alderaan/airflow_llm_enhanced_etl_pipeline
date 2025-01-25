@@ -44,7 +44,7 @@ class ReviewTranslationOperator(BigQueryInsertJobOperator, LoggingMixin):
             FROM `{self.project_id}.{self.dataset_id}.{self.table_id}`
             WHERE review_comment_message IS NOT NULL
               AND review_comment_message_en IS NULL
-              LIMIT 1000
+              LIMIT 10000
         """
 
         self.log.info("project is: " + str(self.project_id))
