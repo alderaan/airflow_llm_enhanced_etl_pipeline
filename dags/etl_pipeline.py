@@ -1,6 +1,7 @@
+# flake8: noqa: E501
 import os
 import yaml
-from datetime import datetime
+from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.utils.task_group import TaskGroup
 
@@ -11,8 +12,14 @@ from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
     GCSToBigQueryOperator,
 )
 from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
-from operators.review_translation import ReviewTranslationOperator
-from operators.review_aspect_scoring import ReviewAspectScoringOperator
+from operators.review_translation import (
+    ReviewTranslationToGCSOperator,
+    ReviewTranslationToBQOperator,
+)
+from operators.review_aspect_scoring import (
+    ReviewAspectScoringToGCSOperator,
+    ReviewAspectScoringToBQOperator,
+)
 
 # --------------------------------------------------------------------------------
 # 1) LOAD YAML CONFIG
@@ -21,14 +28,23 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "etl_pipeline_config.yaml"
 with open(CONFIG_PATH, "r") as f:
     config = yaml.safe_load(f)
 
-default_args = {"owner": "airflow", "depends_on_past": False, "retries": 0}
+default_args = {
+    "owner": "airflow",
+    "depends_on_past": False,
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 0,
+    "retry_delay": timedelta(minutes=5),
+}
 
 dag = DAG(
     dag_id=config["dag_id"],
-    start_date=datetime.strptime(config["start_date"], "%Y-%m-%d"),
-    schedule_interval=config["schedule_interval"],
     default_args=default_args,
+    description="ETL pipeline for Olist data",
+    schedule_interval=config["schedule_interval"],
+    start_date=datetime.strptime(config["start_date"], "%Y-%m-%d"),
     catchup=False,
+    tags=["olist"],
 )
 
 tasks = {}
@@ -102,6 +118,8 @@ with dag:
 
             # Modify the dependencies to only link upload_to_gcs -> load_to_bq
             upload_to_gcs >> load_to_bq
+
+        tasks["staging_load"] = staging_group
 
     # --------------------------------------------------------------------------------
     # 4) CLEAN TASKS (DUMMY SELECT *), EXCEPT ORDER_REVIEWS HAS NEW COLUMNS
@@ -180,36 +198,58 @@ with dag:
         tasks["clean_order_reviews"] = clean_order_reviews
         tasks["load_order_reviews_to_bq"] >> clean_order_reviews
 
+        tasks["data_cleaning"] = cleaning_group
+
     # --------------------------------------------------------------------------------
     # 5) ENRICH REVIEWS WITH TRANSLATIONS AND ASPECT SCORES
     # --------------------------------------------------------------------------------
     with TaskGroup(
         group_id="review_enrichment",
         tooltip="Enrich reviews with translations and scores",
-    ) as enrichment_group:
+    ) as review_enrichment:
         # First translate reviews
-        translate_reviews = ReviewTranslationOperator(
-            task_id="translate_reviews",
-            project_id="correlion",
-            dataset_id="olist_clean",
-            table_id="order_reviews",
+        translate_to_gcs = ReviewTranslationToGCSOperator(
+            task_id="translate_to_gcs",
+            project_id=config["tasks"][4]["bq_project"],
+            dataset_id=config["tasks"][4]["bq_dataset"].replace("_staging", "_clean"),
+            table_id=config["tasks"][4]["bq_table"],
+            dag=dag,
+        )
+
+        translate_to_bq = ReviewTranslationToBQOperator(
+            task_id="translate_to_bq",
+            project_id=config["tasks"][4]["bq_project"],
+            dataset_id=config["tasks"][4]["bq_dataset"].replace("_staging", "_clean"),
+            table_id=config["tasks"][4]["bq_table"],
             dag=dag,
         )
 
         # Then score aspects
-        score_review_aspects = ReviewAspectScoringOperator(
-            task_id="score_review_aspects",
-            project_id="correlion",
-            dataset_id="olist_clean",
-            table_id="order_reviews",
+        score_to_gcs = ReviewAspectScoringToGCSOperator(
+            task_id="score_to_gcs",
+            project_id=config["tasks"][4]["bq_project"],
+            dataset_id=config["tasks"][4]["bq_dataset"].replace("_staging", "_clean"),
+            table_id=config["tasks"][4]["bq_table"],
             dag=dag,
         )
 
-        tasks["translate_reviews"] = translate_reviews
-        tasks["score_review_aspects"] = score_review_aspects
+        score_to_bq = ReviewAspectScoringToBQOperator(
+            task_id="score_to_bq",
+            project_id=config["tasks"][4]["bq_project"],
+            dataset_id=config["tasks"][4]["bq_dataset"].replace("_staging", "_clean"),
+            table_id=config["tasks"][4]["bq_table"],
+            dag=dag,
+        )
 
-        # Set up the sequence: clean -> translate -> score
-        clean_order_reviews >> translate_reviews >> score_review_aspects
+        tasks["translate_to_gcs"] = translate_to_gcs
+        tasks["translate_to_bq"] = translate_to_bq
+        tasks["score_to_gcs"] = score_to_gcs
+        tasks["score_to_bq"] = score_to_bq
+
+        # Set up the sequence
+        translate_to_gcs >> translate_to_bq >> score_to_gcs >> score_to_bq
+
+        tasks["review_enrichment"] = review_enrichment
 
     # --------------------------------------------------------------------------------
     # 6) AGGREGATION TASKS
@@ -396,5 +436,18 @@ with dag:
             tasks["clean_order_items"],
             tasks["clean_products"],
             tasks["clean_product_category_name_translation"],
-            score_review_aspects,  # This ensures we have aspect scores before aggregating
+            score_to_bq,
         ] >> agg_aspect_score_by_product
+
+        tasks["aggregations"] = agg_group
+
+# --------------------------------------------------------------------------------
+# Set up dependencies between task groups
+# --------------------------------------------------------------------------------
+
+(
+    tasks["staging_load"]
+    >> tasks["data_cleaning"]
+    >> tasks["review_enrichment"]
+    >> tasks["aggregations"]
+)

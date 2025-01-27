@@ -1,37 +1,32 @@
+# flake8: noqa: E501
+from typing import Dict, List
 import json
 import time
-from typing import List, Dict
 import pandas as pd
-from openai import OpenAI
-from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+from airflow.models import BaseOperator
 from airflow.providers.google.cloud.hooks.bigquery import BigQueryHook
-from airflow.utils.log.logging_mixin import LoggingMixin
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+from airflow.providers.google.cloud.transfers.local_to_gcs import (
+    LocalFilesystemToGCSOperator,
+)
+from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
+    GCSToBigQueryOperator,
+)
+from openai import OpenAI
 
 
-class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
+class ReviewAspectScoringToGCSOperator(BaseOperator):
+    """Scores review aspects and uploads results to GCS."""
+
     def __init__(
         self, task_id: str, project_id: str, dataset_id: str, table_id: str, **kwargs
     ):
-        # Initialize OpenAI client
+        super().__init__(task_id=task_id, **kwargs)
         self.client = OpenAI()
         self.project_id = project_id
         self.dataset_id = dataset_id
         self.table_id = table_id
-
-        # We'll override this query later in execute()
-        query = "SELECT 1"  # Placeholder
-        super().__init__(
-            task_id=task_id,
-            project_id=project_id,
-            gcp_conn_id="google_cloud_default",
-            configuration={
-                "query": {
-                    "query": query,
-                    "useLegacySql": False,
-                }
-            },
-            **kwargs,
-        )
+        self.gcp_conn_id = "google_cloud_default"
 
     def _fetch_reviews(self) -> pd.DataFrame:
         """Fetch reviews that need aspect scoring."""
@@ -45,7 +40,7 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
             FROM `{self.project_id}.{self.dataset_id}.{self.table_id}`
             WHERE review_comment_message_en IS NOT NULL
               AND review_aspect_scores IS NULL
-              LIMIT 10000
+              LIMIT 100
         """
 
         query_job = client.query(query)
@@ -105,7 +100,7 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
                         },
                     ],
                     "response_format": {"type": "json_object"},
-                    "max_tokens": 1000,
+                    "max_tokens": 100,
                 },
             }
             requests.append(request)
@@ -115,34 +110,30 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
 
     def _create_batch_file(self, requests: List[Dict]) -> str:
         """Create JSONL file and upload to OpenAI."""
-        # Save timestamp for unique filename
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        local_file = f"tmp/aspect_scores_input_{timestamp}.jsonl"
+        local_file = "tmp/aspect_scores_input.jsonl"
 
-        # Write requests to temp JSONL file
         with open(local_file, "w") as f:
             for req in requests:
                 f.write(json.dumps(req) + "\n")
 
         self.log.info(f"Saved batch input file locally to: {local_file}")
 
-        # Upload file to OpenAI
         with open(local_file, "rb") as f:
             file = self.client.files.create(file=f, purpose="batch")
 
         return file.id
 
-    def _process_batch_results(self, output_file_id: str) -> Dict[str, Dict]:
-        """Process batch results and extract aspect scores."""
+    def _process_batch_results(self, output_file_id: str, context):
+        """Process batch results and upload to GCS."""
         content = self.client.files.content(output_file_id)
 
         # Save output file locally
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        local_file = f"tmp/aspect_scores_output_{timestamp}.jsonl"
-        with open(local_file, "w") as f:
+        jsonl_file = "tmp/aspect_scores_output.jsonl"
+        with open(jsonl_file, "w") as f:
             f.write(content.text)
-        self.log.info(f"Saved batch output file locally to: {local_file}")
+        self.log.info(f"Saved batch output file locally to: {jsonl_file}")
 
+        # Process aspect scores
         aspect_scores = {}
         for line in content.text.strip().split("\n"):
             result = json.loads(line)
@@ -153,66 +144,35 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
                 )
                 aspect_scores[review_id] = scores
 
-        return aspect_scores
-
-    def _update_aspect_scores(self, aspect_scores: Dict[str, Dict], context):
-        """Update BigQuery table with aspect scores."""
-        # Create parameters for each set of scores
-        parameters = []
-        update_statements = []
-
-        for i, (review_id, scores) in enumerate(aspect_scores.items()):
-            param_name = f"scores_{i}"
-            parameters.append(
-                {
-                    "name": param_name,
-                    "parameterType": {"type": "STRING"},
-                    "parameterValue": {"value": json.dumps(scores)},
-                }
-            )
-            update_statements.append(
-                f"WHEN review_id = '{review_id}' THEN PARSE_JSON(@{param_name})"
-            )
-
-        cases = "\n                ".join(update_statements)
-        review_ids = "', '".join(aspect_scores.keys())
-
-        query = f"""
-            UPDATE `{self.project_id}.{self.dataset_id}.{self.table_id}`
-            SET review_aspect_scores = (
-                CASE
-                {cases}
-                ELSE review_aspect_scores
-                END
-            )
-            WHERE review_id IN ('{review_ids}');
-        """
-
-        self.log.info(
-            "Executing update query with %d aspect scores", len(aspect_scores)
+        # Create DataFrame and save as CSV
+        df = pd.DataFrame(
+            [
+                (review_id, json.dumps(scores))
+                for review_id, scores in aspect_scores.items()
+            ],
+            columns=["review_id", "review_aspect_scores"],
         )
+        csv_file = "tmp/aspect_scores.csv"
+        df.to_csv(csv_file, index=False, quoting=2, escapechar="\\")
+        self.log.info(f"Saved aspect scores to CSV: {csv_file}")
 
-        update_job = BigQueryInsertJobOperator(
-            task_id=f"{self.task_id}_update",
-            project_id=self.project_id,
-            configuration={
-                "query": {
-                    "query": query,
-                    "useLegacySql": False,
-                    "location": "US",
-                    "queryParameters": parameters,
-                }
-            },
+        # Upload CSV to GCS
+        gcs_object_name = "aspect_scores/aspect_scores.csv"
+        upload_task = LocalFilesystemToGCSOperator(
+            task_id=f"{self.task_id}_upload_to_gcs",
+            src=csv_file,
+            dst=gcs_object_name,
+            bucket="correlion_olist",
             gcp_conn_id=self.gcp_conn_id,
         )
-        update_job.execute(context=context)
+        upload_task.execute(context)
+        self.log.info(f"Uploaded aspect scores to GCS: {gcs_object_name}")
 
     def execute(self, context):
         # 1. Fetch reviews needing aspect scoring
         reviews_df = self._fetch_reviews()
         if reviews_df.empty:
-            self.log.info("No reviews to score")
-            return "No reviews to score"
+            return None
 
         # 2. Prepare and submit batch
         requests = self._prepare_batch_requests(reviews_df)
@@ -249,20 +209,77 @@ class ReviewAspectScoringOperator(BigQueryInsertJobOperator, LoggingMixin):
 
             if status.status == "completed":
                 self.log.info("Batch completed successfully")
-                aspect_scores = self._process_batch_results(status.output_file_id)
-                self.log.info(
-                    f"Processed {len(aspect_scores)} aspect scores",
-                )
-                self._update_aspect_scores(aspect_scores, context)
-                self.log.info("Updated BigQuery with aspect scores")
-                break
+                self._process_batch_results(status.output_file_id, context)
+                return None
             elif status.status in ["failed", "expired", "cancelled"]:
-                self.log.error(
-                    f"Batch failed. Full status object: {status}",
-                )
+                self.log.error(f"Batch failed. Full status object: {status}")
                 if hasattr(status, "errors"):
                     self.log.error(f"Error details: {status.errors.data}")
                 raise Exception(f"Batch failed with status: {status.status}")
 
             self.log.info("Waiting 30 seconds before next poll...")
             time.sleep(30)
+
+
+class ReviewAspectScoringToBQOperator(BaseOperator):
+    """Loads aspect scores from GCS to BigQuery."""
+
+    def __init__(
+        self, task_id: str, project_id: str, dataset_id: str, table_id: str, **kwargs
+    ):
+        super().__init__(task_id=task_id, **kwargs)
+        self.project_id = project_id
+        self.dataset_id = dataset_id  # This is the main dataset
+        self.table_id = table_id
+        self.gcp_conn_id = "google_cloud_default"
+
+    def execute(self, context):
+        gcs_path = "aspect_scores/aspect_scores.csv"
+        staging_dataset = "olist_staging"  # Fixed staging dataset name
+        staging_table = "aspect_scores"
+
+        # Define schema for BigQuery load
+        schema_fields = [
+            {"name": "review_id", "type": "STRING", "mode": "REQUIRED"},
+            {"name": "review_aspect_scores", "type": "STRING", "mode": "NULLABLE"},
+        ]
+
+        # Load from GCS to BigQuery staging
+        load_task = GCSToBigQueryOperator(
+            task_id=f"{self.task_id}_load_to_bq",
+            bucket="correlion_olist",
+            source_objects=[gcs_path],
+            destination_project_dataset_table=(
+                f"{self.project_id}.{staging_dataset}.{staging_table}"
+            ),
+            source_format="CSV",
+            schema_fields=schema_fields,
+            skip_leading_rows=1,
+            write_disposition="WRITE_TRUNCATE",
+            allow_quoted_newlines=True,
+            gcp_conn_id=self.gcp_conn_id,
+        )
+        load_task.execute(context)
+        self.log.info("Loaded aspect scores to BigQuery staging table")
+
+        # Update main table with aspect scores
+        update_query = f"""
+            UPDATE `{self.project_id}.{self.dataset_id}.{self.table_id}` t
+            SET review_aspect_scores = PARSE_JSON(s.review_aspect_scores)
+            FROM `{self.project_id}.{staging_dataset}.{staging_table}` s
+            WHERE t.review_id = s.review_id
+        """
+
+        update_job = BigQueryInsertJobOperator(
+            task_id=f"{self.task_id}_update_main",
+            project_id=self.project_id,
+            configuration={
+                "query": {
+                    "query": update_query,
+                    "useLegacySql": False,
+                }
+            },
+            gcp_conn_id=self.gcp_conn_id,
+        )
+        update_job.execute(context)
+        self.log.info("Updated main table with aspect scores")
