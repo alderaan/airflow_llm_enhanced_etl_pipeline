@@ -7,4 +7,5 @@ matplotlib==3.9.4   # For data visualization
 ydata-profiling[notebook]==4.12.1  # For data profiling
 openai==1.59.6      # For OpenAI API access
 psycopg2-binary==2.9.9  # For PostgreSQL support
+google-cloud-bigquery==3.27.0
 

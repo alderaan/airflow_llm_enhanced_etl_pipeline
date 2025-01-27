@@ -40,7 +40,7 @@ class ReviewAspectScoringToGCSOperator(BaseOperator):
             FROM `{self.project_id}.{self.dataset_id}.{self.table_id}`
             WHERE review_comment_message_en IS NOT NULL
               AND review_aspect_scores IS NULL
-              LIMIT 100
+              LIMIT 10000
         """
 
         query_job = client.query(query)
