@@ -1,1 +1,2 @@
-notebooks/reports/* linguist-vendored 
+notebooks/reports/* linguist-vendored
+notebooks/*.ipynb linguist-vendored 
